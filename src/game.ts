@@ -76,8 +76,8 @@ const LEVELS: Level[] = [
   {
     title: 'V. Hawk',
     hint: 'A wild hawk is hunting. Shield your flock with an open palm.',
-    goal: 0.5,
-    gates: [{ at: [-0.6, 1.5, -1.3] }, { at: [0.6, 1.0, -0.8] }, { at: [0, 1.75, -1.0] }],
+    goal: 0.4,
+    gates: [{ at: [-0.6, 1.5, -1.3] }, { at: [0.65, 1.15, -1.0] }, { at: [0, 1.75, -1.1] }],
     hawk: true,
   },
 ];
@@ -234,6 +234,11 @@ export class MurmurSystem extends createSystem({
       if (import.meta.env.DEV) console.log(`[lvl] ${i} 100% t=0 birds=${this.flock.active}`);
       this.hawkMesh.visible = false;
       this.wind.set(0, 0, 0);
+      // Bring the roost down in front of the player for the finale.
+      const h = this.viewCam().getWorldPosition(new Vector3());
+      // Straight ahead of where the player sits (the level origin), not wherever they happen to look.
+      this.flock.center.set(this.origin.x, h.y - 0.05, this.origin.z - 1.5);
+      this.flock.radius = 0.9;
       const total = this.levelTimes.reduce((a, b) => a + b, 0);
       const m = Math.floor(total / 60);
       const sec = Math.round(total % 60).toString().padStart(2, '0');
@@ -473,15 +478,17 @@ export class MurmurSystem extends createSystem({
       const f = this.pool[this.forces.length];
       f.kind = 'repel';
       f.point.copy(this.hawk);
-      f.radius = 0.5;
-      f.strength = 10;
+      f.radius = 0.45;
+      f.strength = 7;
       this.forces.push(f);
     }
 
     if (this.finished && this.forces.length === 1 && this.forces.length < this.pool.length) {
       // No hands raised in Free Flight: the flock drifts down to rest above your real table.
       const spot = this.perch(head);
-      if (spot) {
+      const view = this.viewCam().getWorldDirection(new Vector3());
+      // Only settle on a surface the player can see, so the moment isn't missed.
+      if (spot && spot.clone().sub(head).normalize().dot(view) > 0.6) {
         const f = this.pool[this.forces.length];
         f.kind = 'attract';
       f.radius = 0;
@@ -584,6 +591,7 @@ export class MurmurSystem extends createSystem({
         if (g.passedCount >= need) {
           g.done = true;
           (g.mesh.material as MeshBasicMaterial).color.set(0xffd27a);
+          (g.mesh.material as MeshBasicMaterial).opacity = 0.45; // completed gates step back visually
           this.audio.chime(1.2);
         }
       }
