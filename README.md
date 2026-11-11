@@ -13,11 +13,11 @@ Five short levels (Call, Scatter, Draw, Drift, Hawk) ask you to guide the flock 
 ## Mixed reality features
 - **Passthrough:** the flock flies through your actual room.
 - **Hand tracking:** gestures are read from raw WebXR hand joints (fingertip reach, pinch distance, palm direction). No controllers are needed.
-- **Plane detection:** gates are kept in front of your real walls, and in Free Flight the flock settles over your real table.
+- **Plane detection:** gates are kept in front of your real walls, and in Free Flight the flock can come to rest over a real table in view.
 
 ## Tech
 - [Immersive Web SDK](https://github.com/facebook/immersive-web-sdk) (WebXR, Three.js, ECS)
-- A boids simulation with a spatial hash; ~900 birds in a single instanced mesh with flapping done in the vertex shader. The bird count adapts if frames get slow.
+- A boids simulation with a spatial hash; ~900 birds in a single instanced mesh with flapping done in the vertex shader. Like real starlings, each bird only tracks its ~7 nearest neighbours. Your call steers velocities (seek) so the stream flies *through* gates, and each bird aims at its own drifting spot, so a called flock forms a breathing cloud. The bird count adapts if frames get slow.
 - Procedural audio from the Web Audio API: the wing-rush swells with the flock's speed.
 
 ## Run locally
