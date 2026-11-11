@@ -116,6 +116,7 @@ export class MurmurSystem extends createSystem({
   private finished = false;
   private startDelay = -1;
   private lastLog = -1;
+  private lastSnd = -1;
 
   init() {
     this.flock = new Flock(FLOCK_SIZE);
@@ -515,6 +516,10 @@ export class MurmurSystem extends createSystem({
     this.flock.calm = this.finished ? Math.min(1, this.flock.calm + delta * 0.2) : 0;
     this.flock.update(delta, time, this.forces, this.wind);
     this.audio.setIntensity(this.flock.averageSpeed() / 1.7, this.forces.length > 1);
+    if (import.meta.env.DEV && Math.floor(time * 4) !== this.lastSnd) {
+      this.lastSnd = Math.floor(time * 4);
+      console.log(`[snd] spd ${(this.flock.averageSpeed() / 1.7).toFixed(2)} ${this.forces.length > 1 ? 1 : 0}`);
+    }
 
     this.levelTime += delta;
     this.updateGates(time, delta);
@@ -563,7 +568,7 @@ export class MurmurSystem extends createSystem({
   private updateGates(time: number, delta: number) {
     if (this.levelIndex < 0 || this.finished) return;
     const level = LEVELS[this.levelIndex];
-    const need = Math.ceil(level.goal * this.flock.active * 2.2);
+    const need = Math.ceil(level.goal * this.flock.active * 3.0);
     const p = this.flock.pos;
     let allDone = true;
     let progress = 0;
@@ -589,7 +594,7 @@ export class MurmurSystem extends createSystem({
             if (leading) g.passedCount++;
           } else if (g.passed[i] && d2 < r2) {
             // Birds you hold inside the ring keep filling it, more slowly.
-            if (leading) g.passedCount += delta * 1.5;
+            if (leading) g.passedCount += delta * 0.12;
           } else if (g.passed[i] && d2 > out2) {
             g.passed[i] = 0;
           }
@@ -599,6 +604,7 @@ export class MurmurSystem extends createSystem({
           (g.mesh.material as MeshBasicMaterial).color.set(0xffd27a);
           (g.mesh.material as MeshBasicMaterial).opacity = 0.45; // completed gates step back visually
           this.audio.chime(1.2);
+          if (import.meta.env.DEV) console.log('[snd] gate');
         }
       }
       const pulse = 1 + Math.sin(time * 3) * 0.04;
