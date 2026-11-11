@@ -29,6 +29,7 @@ interface Gate {
   passedCount: number;
   done: boolean;
   drift?: (t: number, out: Vector3) => void;
+  funnel: Force;
 }
 
 interface Level {
@@ -52,13 +53,13 @@ const LEVELS: Level[] = [
     title: 'II. Scatter',
     hint: 'Close a fist to become the hawk. Split the flock between gates.',
     goal: 0.4,
-    gates: [{ at: [-0.75, 1.1, -1.0] }, { at: [0.75, 1.4, -1.0] }],
+    gates: [{ at: [-0.7, 1.15, -1.4] }, { at: [0.7, 1.45, -1.4] }],
   },
   {
     title: 'III. Draw',
     hint: 'Pinch and draw a path in the air. Release, and the flock flies it.',
     goal: 0.45,
-    gates: [{ at: [-1.1, 1.6, -0.2] }, { at: [1.1, 0.9, -0.4] }],
+    gates: [{ at: [-0.95, 1.5, -0.8] }, { at: [0.95, 1.1, -0.9] }],
   },
   {
     title: 'IV. Drift',
@@ -76,7 +77,7 @@ const LEVELS: Level[] = [
     title: 'V. Hawk',
     hint: 'A wild hawk is hunting. Shield your flock with an open palm.',
     goal: 0.5,
-    gates: [{ at: [-0.6, 1.5, -1.3] }, { at: [0.6, 1.0, -0.8] }, { at: [0, 1.7, -1.6] }],
+    gates: [{ at: [-0.6, 1.5, -1.3] }, { at: [0.6, 1.0, -0.8] }, { at: [0, 1.75, -1.0] }],
     hawk: true,
   },
 ];
@@ -114,6 +115,7 @@ export class MurmurSystem extends createSystem({
   private slowFrames = 0;
   private finished = false;
   private startDelay = -1;
+  private lastLog = -1;
 
   init() {
     this.flock = new Flock(FLOCK_SIZE);
@@ -225,11 +227,11 @@ export class MurmurSystem extends createSystem({
     this.gates = [];
     this.path = [];
     this.levelIndex = i;
-    this.levelTime = 0;
-
     if (i > 0) this.levelTimes.push(this.levelTime);
+    this.levelTime = 0;
     if (i >= LEVELS.length) {
       this.finished = true;
+      if (import.meta.env.DEV) console.log(`[lvl] ${i} 100% t=0 birds=${this.flock.active}`);
       this.hawkMesh.visible = false;
       this.wind.set(0, 0, 0);
       const total = this.levelTimes.reduce((a, b) => a + b, 0);
@@ -245,8 +247,12 @@ export class MurmurSystem extends createSystem({
 
     const head = this.viewCam().getWorldPosition(new Vector3());
     this.origin.set(head.x, 0, head.z);
-    this.flock.center.set(head.x, Math.max(1.0, head.y - 0.05), head.z - 1.45);
-    this.flock.radius = 1.25;
+    // The flock roosts high and far until you call it, so gates need deliberate play.
+    const prev = this.flock.center.clone();
+    this.flock.center.set(head.x, head.y + 0.35, head.z - 1.9);
+    if (i === 0) this.flock.gatherAt(this.flock.center, 0.35);
+    void prev;
+    this.flock.radius = 0.6;
 
     const level = LEVELS[i];
     this.wind.set(...(level.wind ?? [0, 0, 0]));
@@ -277,11 +283,13 @@ export class MurmurSystem extends createSystem({
         mesh,
         pos,
         normal: head.clone().sub(pos).normalize(),
-        radius: 0.22,
+        radius: 0.32, // forgiving capture sphere around the 22 cm ring
         passed: new Uint8Array(FLOCK_SIZE),
         passedCount: 0,
         done: false,
         drift: spec.drift,
+        // Birds that come close get drawn gently through the ring.
+        funnel: { kind: 'attract', point: pos, radius: 0.42, strength: 1.4 },
       });
     }
     this.setHud(level.title, level.hint);
@@ -342,17 +350,25 @@ export class MurmurSystem extends createSystem({
     return xr.isPresenting ? xr.getCamera() : this.world.camera;
   }
 
+  /** How squarely a palm is held up toward the room: 1 = facing straight out, low for hands resting palm-down. */
+  private facing(h: HandState, head: Vector3) {
+    const out = this.tmpDir.copy(h.palm).sub(head).setY(0).normalize();
+    if (h.normal.y < -0.6) return 0;
+    return h.normal.x * out.x + h.normal.z * out.z;
+  }
+
   private handForces(hand: HandState, head: Vector3) {
     if (!hand.tracked) return;
     // An open hand only calls the flock when the palm is held up toward it,
     // so relaxed hands resting in your lap do nothing.
-    const facing = hand.normal.dot(this.tmpDir.copy(hand.palm).sub(head).normalize());
+    const facing = this.facing(hand, head);
     if (hand.gesture === 'open' && facing > 0.55) {
       const f = this.pool[this.forces.length];
       f.kind = 'attract';
-      // Swirl just beyond the palm, away from the face.
-      f.point.copy(hand.palm).sub(head).setLength(0.45).add(hand.palm);
-      f.strength = 1.5;
+      f.radius = 0;
+      // The swirl sits ~75 cm beyond the palm, so a seated arm can reach gates across the room.
+      f.point.copy(hand.palm).sub(head).setLength(0.75).add(hand.palm);
+      f.strength = 2.4;
       this.forces.push(f);
     } else if (hand.gesture === 'fist') {
       const f = this.pool[this.forces.length];
@@ -431,6 +447,7 @@ export class MurmurSystem extends createSystem({
       this.lure.lerpVectors(this.path[idx], this.path[next], this.pathT % 1);
       const f = this.pool[this.forces.length];
       f.kind = 'attract';
+      f.radius = 0;
       f.point.copy(this.lure);
       f.strength = 2.2;
       this.forces.push(f);
@@ -467,11 +484,14 @@ export class MurmurSystem extends createSystem({
       if (spot) {
         const f = this.pool[this.forces.length];
         f.kind = 'attract';
+      f.radius = 0;
         f.point.copy(spot).setY(spot.y + 0.15);
         f.strength = 0.9;
         this.forces.push(f);
       }
     }
+    // Gate funnels only help a flock you are actively leading.
+    if (this.flock.leash < 0.6) for (const g of this.gates) if (!g.done) this.forces.push(g.funnel);
     this.updateCues(head, time);
 
     // Keep Quest 3 at frame rate: if frames stay slow, simulate fewer birds.
@@ -482,6 +502,8 @@ export class MurmurSystem extends createSystem({
       this.slowFrames = 0;
     }
 
+    const steering = this.forces.some((f) => f !== this.pool[this.pool.length - 1] && f.radius === 0 && f.kind === 'attract') || this.forces.some((f) => f.kind === 'repel' && f.radius === 0.7);
+    this.flock.leash += ((steering ? 0.12 : 1) - this.flock.leash) * Math.min(1, delta * 3);
     this.flock.calm = this.finished ? Math.min(1, this.flock.calm + delta * 0.2) : 0;
     this.flock.update(delta, time, this.forces, this.wind);
     this.audio.setIntensity(this.flock.averageSpeed() / 1.7, this.forces.length > 1);
@@ -497,7 +519,7 @@ export class MurmurSystem extends createSystem({
       const h = hands[i];
       const cue = this.cues[i];
       const mat = cue.material as MeshBasicMaterial;
-      const facing = h.normal.dot(this.tmpDir.copy(h.palm).sub(head).normalize());
+      const facing = this.facing(h, head);
       if (!h.tracked || h.gesture === 'none' || (h.gesture === 'open' && facing <= 0.55)) {
         mat.opacity = Math.max(0, mat.opacity - 0.08);
         continue;
@@ -545,13 +567,18 @@ export class MurmurSystem extends createSystem({
         g.mesh.position.copy(g.pos);
       }
       if (!g.done) {
+        // Count fly-throughs: a bird scores when it enters the ring, and can score
+        // again once it has left and come back, so steering a stream through pays off.
         const r2 = g.radius * g.radius;
+        const out2 = r2 * 2.6;
         for (let i = 0; i < this.flock.active; i++) {
-          if (g.passed[i]) continue;
           const dx = p[i * 3] - g.pos.x, dy = p[i * 3 + 1] - g.pos.y, dz = p[i * 3 + 2] - g.pos.z;
-          if (dx * dx + dy * dy + dz * dz < r2) {
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (!g.passed[i] && d2 < r2) {
             g.passed[i] = 1;
             g.passedCount++;
+          } else if (g.passed[i] && d2 > out2) {
+            g.passed[i] = 0;
           }
         }
         if (g.passedCount >= need) {
@@ -567,6 +594,10 @@ export class MurmurSystem extends createSystem({
     }
     if (this.gates.length) {
       const pct = Math.round((progress / this.gates.length) * 100);
+      if (import.meta.env.DEV && Math.floor(time / 2) !== this.lastLog) {
+        this.lastLog = Math.floor(time / 2);
+        console.log(`[lvl] ${this.levelIndex} ${pct}% t=${this.levelTime.toFixed(1)} birds=${this.flock.active}`);
+      }
       this.setHud(level.title, level.hint, pct / 100);
     }
     if (allDone && this.gates.length) this.startLevel(this.levelIndex + 1);

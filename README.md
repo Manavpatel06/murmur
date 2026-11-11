@@ -8,7 +8,7 @@ A hands-first mixed reality murmuration for Meta Quest. Sit back, and a flock of
 | Fist | You become the hawk; the flock scatters |
 | Pinch and draw | Sketch a path in the air; release and the flock flies it |
 
-Five short levels (Call, Scatter, Draw, Drift, Hawk) ask you to guide the flock through glowing gates, then Free Flight lets you play. The whole experience is seated, controller-free, and takes about ten minutes.
+Five short levels (Call, Scatter, Draw, Drift, Hawk) ask you to guide the flock through glowing gates, then Free Flight lets you play. The whole experience is seated, controller-free, and takes about five minutes.
 
 ## Mixed reality features
 - **Passthrough:** the flock flies through your actual room.

@@ -46,6 +46,7 @@ export class Flock {
   minSpeed = 0.55;
   maxSpeed = 1.7;
   calm = 0; // 0..1, lowers speed for the ending
+  leash = 1; // 1 = flock stays near its roost; lower while the player steers
   active: number; // birds currently simulated and drawn (lowered on slow devices)
 
   private cell = 0.22;
@@ -131,7 +132,7 @@ export class Flock {
       list.push(i);
     }
 
-    const nr = 0.2;
+    const nr = 0.26;
     const nr2 = nr * nr;
     const sep2 = 0.045 * 0.045;
     const maxSpeed = this.maxSpeed * (1 - 0.5 * this.calm);
@@ -172,16 +173,18 @@ export class Flock {
 
       let fx = 0, fy = 0, fz = 0;
       if (n > 0) {
-        fx += (ax / n - vel[ix]) * 1.6 + (cx / n) * 1.1 + sx;
-        fy += (ay / n - vel[ix + 1]) * 1.6 + (cy / n) * 1.1 + sy;
-        fz += (az / n - vel[ix + 2]) * 1.6 + (cz / n) * 1.1 + sz;
+        fx += (ax / n - vel[ix]) * 1.6 + (cx / n) * 1.3 + sx;
+        fy += (ay / n - vel[ix + 1]) * 1.6 + (cy / n) * 1.3 + sy;
+        fz += (az / n - vel[ix + 2]) * 1.6 + (cz / n) * 1.3 + sz;
       }
 
       // Soft boundary around the play volume, flattened vertically.
       const bx = px - this.center.x, by = (py - this.center.y) * 1.6, bz = pz - this.center.z;
       const bd = Math.sqrt(bx * bx + by * by + bz * bz);
       if (bd > this.radius) {
-        const k = (bd - this.radius) * 4 / bd;
+        // The leash relaxes while the player is steering, so a called flock can leave its roost.
+        const over = bd - this.radius;
+        const k = (over * 4 * this.leash + Math.max(0, over - 1.4) * 6) / bd;
         fx -= bx * k; fy -= by * k; fz -= bz * k;
       }
       if (py < 0.35) fy += (0.35 - py) * 12;
@@ -190,9 +193,11 @@ export class Flock {
         const dx = f.point.x - px, dy = f.point.y - py, dz = f.point.z - pz;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-4;
         if (f.kind === 'attract') {
+          if (f.radius > 0 && d > f.radius) continue; // local funnel, e.g. around a gate
           // Pull toward the point, plus a sideways swirl so birds orbit instead of piling up.
           const k = f.strength / d * Math.min(1, d / 0.25);
-          fx += dx * k - dz * k * 0.9; fy += dy * k; fz += dz * k + dx * k * 0.9;
+          const swirl = f.radius > 0 ? 0 : 0.5; // funnels pull straight in; hand calls swirl
+          fx += dx * k - dz * k * swirl; fy += dy * k; fz += dz * k + dx * k * swirl;
         } else if (d < f.radius) {
           const k = -f.strength * (1 - d / f.radius) / d;
           fx += dx * k; fy += dy * k; fz += dz * k;
@@ -219,6 +224,18 @@ export class Flock {
       this.mesh.setMatrixAt(i, this.m);
     }
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Regroup the whole flock in a small ball (used once, so it starts at its roost). */
+  gatherAt(c: Vector3, r: number) {
+    for (let i = 0; i < this.count; i++) {
+      const u = Math.cbrt(Math.random()) * r;
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      this.pos[i * 3] = c.x + u * Math.sin(ph) * Math.cos(th);
+      this.pos[i * 3 + 1] = c.y + u * Math.cos(ph) * 0.6;
+      this.pos[i * 3 + 2] = c.z + u * Math.sin(ph) * Math.sin(th);
+    }
   }
 
   averageSpeed(): number {
