@@ -24,7 +24,7 @@ const UP = new Vector3(0, 1, 0);
 
 function birdGeometry(): BufferGeometry {
   // A flat chevron: body along +z, wings along ±x. 4.5 cm wingspan.
-  const s = 0.012;
+  const s = 0.017;
   const v = [
     // left wing
     0, 0, s * 0.9, -s, 0, -s * 0.2, 0, 0, -s * 0.5,
@@ -132,9 +132,9 @@ export class Flock {
       list.push(i);
     }
 
-    const nr = 0.26;
+    const nr = 0.3;
     const nr2 = nr * nr;
-    const sep2 = 0.045 * 0.045;
+    const sep2 = 0.065 * 0.065;
     const maxSpeed = this.maxSpeed * (1 - 0.5 * this.calm);
     const minSpeed = this.minSpeed * (1 - 0.4 * this.calm);
     const c = this.cell;
@@ -173,9 +173,9 @@ export class Flock {
 
       let fx = 0, fy = 0, fz = 0;
       if (n > 0) {
-        fx += (ax / n - vel[ix]) * 1.6 + (cx / n) * 1.3 + sx;
-        fy += (ay / n - vel[ix + 1]) * 1.6 + (cy / n) * 1.3 + sy;
-        fz += (az / n - vel[ix + 2]) * 1.6 + (cz / n) * 1.3 + sz;
+        fx += (ax / n - vel[ix]) * 1.6 + (cx / n) * 0.9 + sx;
+        fy += (ay / n - vel[ix + 1]) * 1.6 + (cy / n) * 0.9 + sy;
+        fz += (az / n - vel[ix + 2]) * 1.6 + (cz / n) * 0.9 + sz;
       }
 
       // Soft boundary around the play volume, flattened vertically.

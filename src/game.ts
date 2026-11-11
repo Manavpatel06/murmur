@@ -47,7 +47,7 @@ const LEVELS: Level[] = [
     title: 'I. Call',
     hint: 'Hold out an open palm. The flock follows your hand.',
     goal: 0.5,
-    gates: [{ at: [0.5, 1.4, -1.25] }],
+    gates: [{ at: [0.55, 1.3, -1.0] }],
   },
   {
     title: 'II. Scatter',
@@ -254,7 +254,7 @@ export class MurmurSystem extends createSystem({
     this.origin.set(head.x, 0, head.z);
     // The flock roosts high and far until you call it, so gates need deliberate play.
     const prev = this.flock.center.clone();
-    this.flock.center.set(head.x, head.y + 0.35, head.z - 1.9);
+    this.flock.center.set(head.x, head.y + 0.3, head.z - 1.6);
     if (i === 0) this.flock.gatherAt(this.flock.center, 0.35);
     void prev;
     this.flock.radius = 0.6;
@@ -504,7 +504,8 @@ export class MurmurSystem extends createSystem({
     // Keep Quest 3 at frame rate: if frames stay slow, simulate fewer birds.
     if (delta > 1 / 55) this.slowFrames++;
     else this.slowFrames = Math.max(0, this.slowFrames - 1);
-    if (this.slowFrames > 90 && this.flock.active > 400) {
+    // (The desktop emulator stutters while screen-recording, so the reducer only runs on real devices.)
+    if (!import.meta.env.DEV && this.slowFrames > 90 && this.flock.active > 400) {
       this.flock.active = Math.floor(this.flock.active * 0.85);
       this.slowFrames = 0;
     }
@@ -516,7 +517,7 @@ export class MurmurSystem extends createSystem({
     this.audio.setIntensity(this.flock.averageSpeed() / 1.7, this.forces.length > 1);
 
     this.levelTime += delta;
-    this.updateGates(time);
+    this.updateGates(time, delta);
     this.placeHud(head, delta);
   }
 
@@ -559,10 +560,10 @@ export class MurmurSystem extends createSystem({
     return c.multiplyScalar(6 / this.flock.count);
   }
 
-  private updateGates(time: number) {
+  private updateGates(time: number, delta: number) {
     if (this.levelIndex < 0 || this.finished) return;
     const level = LEVELS[this.levelIndex];
-    const need = Math.ceil(level.goal * this.flock.active);
+    const need = Math.ceil(level.goal * this.flock.active * 2.2);
     const p = this.flock.pos;
     let allDone = true;
     let progress = 0;
@@ -578,12 +579,17 @@ export class MurmurSystem extends createSystem({
         // again once it has left and come back, so steering a stream through pays off.
         const r2 = g.radius * g.radius;
         const out2 = r2 * 2.6;
+        const leading = this.flock.leash < 0.6;
         for (let i = 0; i < this.flock.active; i++) {
           const dx = p[i * 3] - g.pos.x, dy = p[i * 3 + 1] - g.pos.y, dz = p[i * 3 + 2] - g.pos.z;
           const d2 = dx * dx + dy * dy + dz * dz;
           if (!g.passed[i] && d2 < r2) {
             g.passed[i] = 1;
-            g.passedCount++;
+            // Only birds you are actively leading score; a drifting flock doesn't.
+            if (leading) g.passedCount++;
+          } else if (g.passed[i] && d2 < r2) {
+            // Birds you hold inside the ring keep filling it, more slowly.
+            if (leading) g.passedCount += delta * 1.5;
           } else if (g.passed[i] && d2 > out2) {
             g.passed[i] = 0;
           }
