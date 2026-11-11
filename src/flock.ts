@@ -47,6 +47,8 @@ export class Flock {
   maxSpeed = 1.7;
   calm = 0; // 0..1, lowers speed for the ending
   leash = 1; // 1 = flock stays near its roost; lower while the player steers
+  spread = 0.38; // radius of each bird's personal offset around a call point
+  readonly phase: Float32Array;
   active: number; // birds currently simulated and drawn (lowered on slow devices)
 
   private cell = 0.22;
@@ -61,6 +63,8 @@ export class Flock {
   constructor(count: number) {
     this.count = count;
     this.active = count;
+    this.phase = new Float32Array(count);
+    for (let i = 0; i < count; i++) this.phase[i] = Math.random() * 100;
     this.pos = new Float32Array(count * 3);
     this.vel = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
@@ -189,12 +193,16 @@ export class Flock {
       }
       if (py < 0.35) fy += (0.35 - py) * 12;
 
+      // Each bird aims at its own slowly drifting spot around a call, so a called flock forms a
+      // breathing cloud rather than collapsing into one ball.
+      const ph = this.phase[i];
+      const ox = Math.sin(time * 0.7 + ph) * this.spread, oy = Math.sin(time * 0.9 + ph * 1.7) * this.spread * 0.6, oz = Math.cos(time * 0.6 + ph * 2.3) * this.spread;
       for (const f of forces) {
-        const dx = f.point.x - px, dy = f.point.y - py, dz = f.point.z - pz;
+        const own = f.kind === 'attract' && f.radius === 0;
+        const dx = f.point.x + (own ? ox : 0) - px, dy = f.point.y + (own ? oy : 0) - py, dz = f.point.z + (own ? oz : 0) - pz;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-4;
         if (f.kind === 'attract') {
           if (f.radius > 0 && d > f.radius) continue; // local funnel, e.g. around a gate
-          // Pull toward the point, plus a sideways swirl so birds orbit instead of piling up.
           // Seek: steer the velocity toward the point (not just accelerate), so birds fly
           // *through* it instead of orbiting wide around it. A little sideways swirl keeps
           // the stream alive once it arrives.
