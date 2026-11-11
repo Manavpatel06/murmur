@@ -30,6 +30,7 @@ interface Gate {
   done: boolean;
   drift?: (t: number, out: Vector3) => void;
   funnel: Force;
+  flow: number;
 }
 
 interface Level {
@@ -46,7 +47,7 @@ const LEVELS: Level[] = [
   {
     title: 'I. Call',
     hint: 'Hold out an open palm. The flock follows your hand.',
-    goal: 0.5,
+    goal: 0.35,
     gates: [{ at: [0.55, 1.3, -1.0] }],
   },
   {
@@ -292,6 +293,7 @@ export class MurmurSystem extends createSystem({
         radius: 0.32, // forgiving capture sphere around the 22 cm ring
         passed: new Uint8Array(FLOCK_SIZE),
         passedCount: 0,
+        flow: 0,
         done: false,
         drift: spec.drift,
         // Birds that come close get drawn gently through the ring.
@@ -374,6 +376,13 @@ export class MurmurSystem extends createSystem({
       f.radius = 0;
       // The swirl sits ~75 cm beyond the palm, so a seated arm can reach gates across the room.
       f.point.copy(hand.palm).sub(head).setLength(0.75).add(hand.palm);
+      // Aim assist: a call aimed near an open gate is drawn onto it, so the stream threads the ring.
+      for (const g of this.gates) {
+        if (!g.done && f.point.distanceTo(g.pos) < 0.75) {
+          f.point.lerp(g.pos, 0.7);
+          break;
+        }
+      }
       f.strength = 2.4;
       this.forces.push(f);
     } else if (hand.gesture === 'fist') {
@@ -518,10 +527,12 @@ export class MurmurSystem extends createSystem({
     this.audio.setIntensity(this.flock.averageSpeed() / 1.7, this.forces.length > 1);
     if (import.meta.env.DEV && Math.floor(time * 4) !== this.lastSnd) {
       this.lastSnd = Math.floor(time * 4);
-      console.log(`[snd] spd ${(this.flock.averageSpeed() / 1.7).toFixed(2)} ${this.forces.length > 1 ? 1 : 0}`);
+      console.log(`[snd] spd ${(this.flock.averageSpeed() / 1.7).toFixed(2)} ${this.forces.length > 1 ? 1 : 0} c=${this.centroid().toArray().map((v) => v.toFixed(2)).join(",")}`);
     }
 
     this.levelTime += delta;
+    // Free Flight: the summary card bows out after a few seconds and leaves just you and the flock.
+    if (this.finished) this.hud.mesh.visible = this.levelTime < 8;
     this.updateGates(time, delta);
     this.placeHud(head, delta);
   }
@@ -568,7 +579,8 @@ export class MurmurSystem extends createSystem({
   private updateGates(time: number, delta: number) {
     if (this.levelIndex < 0 || this.finished) return;
     const level = LEVELS[this.levelIndex];
-    const need = Math.ceil(level.goal * this.flock.active * 3.0);
+    // Each gate needs this many seconds of strong flow through it (goal 0.4 -> 6 s).
+    const need = level.goal * 15;
     const p = this.flock.pos;
     let allDone = true;
     let progress = 0;
@@ -584,22 +596,24 @@ export class MurmurSystem extends createSystem({
         // again once it has left and come back, so steering a stream through pays off.
         const r2 = g.radius * g.radius;
         const out2 = r2 * 2.6;
-        const leading = this.flock.leash < 0.6;
+        // You score a gate only while you are leading the flock to *that* gate: one of your hand
+        // calls (or a drawn path) has to be pulling toward it, not just anywhere in the room.
+        const leading = this.flock.leash < 0.6 && this.forces.some((f) => f.kind === 'attract' && f.radius === 0 && f.point.distanceTo(g.pos) < 0.75);
+        let entered = 0;
         for (let i = 0; i < this.flock.active; i++) {
           const dx = p[i * 3] - g.pos.x, dy = p[i * 3 + 1] - g.pos.y, dz = p[i * 3 + 2] - g.pos.z;
           const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < r2) entered++; // birds inside the ring right now
           if (!g.passed[i] && d2 < r2) {
             g.passed[i] = 1;
-            // Only birds you are actively leading score; a drifting flock doesn't.
-            if (leading) g.passedCount++;
-          } else if (g.passed[i] && d2 < r2) {
-            // Birds you hold inside the ring keep filling it, more slowly.
-            if (leading) g.passedCount += delta * 0.12;
           } else if (g.passed[i] && d2 > out2) {
             g.passed[i] = 0;
           }
         }
-        if (g.passedCount >= need) {
+        // Flow = how many birds are in the ring right now (smoothed). A thick stream you are leading
+        // fills the gate at one second per second; a trickle fills it slowly; a drifting flock not at all.
+        g.flow += (entered - g.flow) * Math.min(1, delta * 4);
+        if (leading) g.passedCount += delta * Math.min(1, g.flow / 80);        if (g.passedCount >= need) {
           g.done = true;
           (g.mesh.material as MeshBasicMaterial).color.set(0xffd27a);
           (g.mesh.material as MeshBasicMaterial).opacity = 0.45; // completed gates step back visually
@@ -616,7 +630,7 @@ export class MurmurSystem extends createSystem({
       const pct = Math.round((progress / this.gates.length) * 100);
       if (import.meta.env.DEV && Math.floor(time / 2) !== this.lastLog) {
         this.lastLog = Math.floor(time / 2);
-        console.log(`[lvl] ${this.levelIndex} ${pct}% t=${this.levelTime.toFixed(1)} birds=${this.flock.active}`);
+        console.log(`[lvl] ${this.levelIndex} ${pct}% t=${this.levelTime.toFixed(1)} birds=${this.flock.active} open=${this.gates.filter((g) => !g.done).map((g) => g.pos.toArray().map((v) => v.toFixed(2)).join(",")).join(";")}`);
       }
       this.setHud(level.title, level.hint, pct / 100);
     }

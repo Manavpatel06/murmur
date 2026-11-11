@@ -24,7 +24,7 @@ const UP = new Vector3(0, 1, 0);
 
 function birdGeometry(): BufferGeometry {
   // A flat chevron: body along +z, wings along ±x. 4.5 cm wingspan.
-  const s = 0.017;
+  const s = 0.013;
   const v = [
     // left wing
     0, 0, s * 0.9, -s, 0, -s * 0.2, 0, 0, -s * 0.5,
@@ -134,7 +134,7 @@ export class Flock {
 
     const nr = 0.3;
     const nr2 = nr * nr;
-    const sep2 = 0.065 * 0.065;
+    const sep2 = 0.085 * 0.085;
     const maxSpeed = this.maxSpeed * (1 - 0.5 * this.calm);
     const minSpeed = this.minSpeed * (1 - 0.4 * this.calm);
     const c = this.cell;
@@ -154,7 +154,7 @@ export class Flock {
               (gx + ox + 512) * 1048576 + (gy + oy + 512) * 1024 + (gz + oz + 512),
             );
             if (!list) continue;
-            for (let li = 0; li < list.length && n < 24; li++) {
+            for (let li = 0; li < list.length && n < 7; li++) {
               const j = list[li];
               if (j === i) continue;
               const jx = j * 3;
@@ -166,16 +166,16 @@ export class Flock {
               cx += dx; cy += dy; cz += dz;
               if (d2 < sep2) {
                 const inv = 1 / (d2 + 1e-4);
-                sx -= dx * inv * 0.006; sy -= dy * inv * 0.006; sz -= dz * inv * 0.006;
+                sx -= dx * inv * 0.009; sy -= dy * inv * 0.009; sz -= dz * inv * 0.009;
               }
             }
           }
 
       let fx = 0, fy = 0, fz = 0;
       if (n > 0) {
-        fx += (ax / n - vel[ix]) * 1.6 + (cx / n) * 0.9 + sx;
-        fy += (ay / n - vel[ix + 1]) * 1.6 + (cy / n) * 0.9 + sy;
-        fz += (az / n - vel[ix + 2]) * 1.6 + (cz / n) * 0.9 + sz;
+        fx += (ax / n - vel[ix]) * 1.6 + (cx / n) * 0.8 + sx;
+        fy += (ay / n - vel[ix + 1]) * 1.6 + (cy / n) * 0.8 + sy;
+        fz += (az / n - vel[ix + 2]) * 1.6 + (cz / n) * 0.8 + sz;
       }
 
       // Soft boundary around the play volume, flattened vertically.
@@ -195,9 +195,15 @@ export class Flock {
         if (f.kind === 'attract') {
           if (f.radius > 0 && d > f.radius) continue; // local funnel, e.g. around a gate
           // Pull toward the point, plus a sideways swirl so birds orbit instead of piling up.
-          const k = f.strength / d * Math.min(1, d / 0.25);
-          const swirl = f.radius > 0 ? 0 : 0.5; // funnels pull straight in; hand calls swirl
-          fx += dx * k - dz * k * swirl; fy += dy * k; fz += dz * k + dx * k * swirl;
+          // Seek: steer the velocity toward the point (not just accelerate), so birds fly
+          // *through* it instead of orbiting wide around it. A little sideways swirl keeps
+          // the stream alive once it arrives.
+          const g = f.strength * 1.1;
+          const ux = dx / d, uy = dy / d, uz = dz / d;
+          const swirl = f.radius > 0 ? 0 : 0.35;
+          fx += (ux * this.maxSpeed - vel[ix]) * g - uz * swirl * f.strength;
+          fy += (uy * this.maxSpeed - vel[ix + 1]) * g;
+          fz += (uz * this.maxSpeed - vel[ix + 2]) * g + ux * swirl * f.strength;
         } else if (d < f.radius) {
           const k = -f.strength * (1 - d / f.radius) / d;
           fx += dx * k; fy += dy * k; fz += dz * k;
