@@ -10,6 +10,12 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
+  CylinderGeometry,
+  SphereGeometry,
+  BackSide,
+  SRGBColorSpace,
+  Texture,
+  TextureLoader,
   Quaternion,
   TorusGeometry,
   Vector3,
@@ -33,39 +39,64 @@ interface Gate {
   flow: number;
 }
 
+type Skyline = 'farm' | 'marsh' | 'pier' | 'rome';
+
 interface Level {
+  name?: string; // place name on the map
   title: string;
   hint: string;
-  goal: number; // fraction of the flock that must fly through each gate
+  note?: string; // the field note you earn here (a real fact about starlings)
+  goal: number; // seconds-ish of strong flow each ring needs (x15)
   gates: Array<{ at: [number, number, number]; drift?: Gate['drift'] }>;
   hawk?: boolean;
   wind?: [number, number, number];
+  sky: [number, number, number, number]; // dusk tint r,g,b,opacity
+  skyline?: Skyline;
+  color?: number; // map light colour
+  grade?: number; // how much dusk tint to lay over the 360 photo (daytime photos need more)
 }
 
-// Positions are relative to where the player sits when the level starts.
+// The story: at dusk one lost starling finds your room. You then choose, in any order, four real
+// places where starlings gather. Each visit brings more of the flock home (1 -> 40 -> 250 -> 600 ->
+// 900) and earns a field note. At nightfall the whole murmuration settles to sleep around you.
+// LEVELS[0] is the opening; LEVELS[1..4] are the places on the map.
 const LEVELS: Level[] = [
   {
-    title: 'I. Call',
-    hint: 'Hold out an open palm. The flock follows your hand.',
-    goal: 0.35,
+    title: 'One lost bird',
+    hint: 'A starling has lost its flock. Hold up an open palm and guide it through the ring.',
+    goal: 0.2,
     gates: [{ at: [0.55, 1.3, -1.0] }],
+    sky: [1.0, 0.7, 0.3, 0.1],
   },
   {
-    title: 'II. Scatter',
-    hint: 'Close a fist to become the hawk. Split the flock between gates.',
-    goal: 0.4,
+    name: 'Open farmland',
+    title: 'Open farmland',
+    hint: 'They are feeding in the fields. Lead them through both rings before the light goes.',
+    note: 'Starlings feed by pushing a closed beak into the soil and prying it open to find grubs.',
+    goal: 0.3,
     gates: [{ at: [-0.7, 1.15, -1.4] }, { at: [0.7, 1.45, -1.4] }],
+    sky: [1.0, 0.6, 0.22, 0.16],
+    skyline: 'farm',
+    color: 0xffc35a,
   },
   {
-    title: 'III. Draw',
-    hint: 'Pinch and draw a path in the air. Release, and the flock flies it.',
-    goal: 0.45,
+    name: 'Danish marshes',
+    title: 'The Danish marshes',
+    hint: 'Over the reeds the flock moves as one. Pinch and draw a path in the air, and they will fly it.',
+    note: "In Denmark this is called sort sol, 'black sun': flocks over the marshes so dense they darken the evening sky.",
+    goal: 0.4,
     gates: [{ at: [-0.95, 1.5, -0.8] }, { at: [0.95, 1.1, -0.9] }],
+    sky: [0.95, 0.42, 0.3, 0.18],
+    skyline: 'marsh',
+    grade: 1.5,
+    color: 0xff8f6b,
   },
   {
-    title: 'IV. Drift',
-    hint: 'The gate is moving. Lead the flock to where it will be.',
-    goal: 0.45,
+    name: 'Seaside pier',
+    title: 'The seaside pier',
+    hint: 'Sea wind pushes the ring along the pier. Lead the flock to where it will be.',
+    note: 'Each bird follows only about seven neighbours. That one rule lets thousands turn as one, and it runs this flock too.',
+    goal: 0.4,
     gates: [
       {
         at: [0, 1.3, -1.2],
@@ -73,15 +104,93 @@ const LEVELS: Level[] = [
       },
     ],
     wind: [0.25, 0, 0],
+    sky: [0.5, 0.36, 0.6, 0.22],
+    skyline: 'pier',
+    color: 0x9fb6ff,
   },
   {
-    title: 'V. Hawk',
-    hint: 'A wild hawk is hunting. Shield your flock with an open palm.',
+    name: 'Rooftops of Rome',
+    title: 'The rooftops of Rome',
+    hint: 'A falcon hunts over the rooftops. Clench a fist at it to drive it off, then bring them through.',
+    note: 'When a falcon dives, a dark wave ripples across the flock, faster than any single bird can fly.',
     goal: 0.4,
-    gates: [{ at: [-0.6, 1.5, -1.3] }, { at: [0.65, 1.15, -1.0] }, { at: [0, 1.75, -1.1] }],
+    gates: [{ at: [-0.6, 1.5, -1.3] }, { at: [0.65, 1.15, -1.0] }],
     hawk: true,
+    sky: [0.75, 0.32, 0.42, 0.22],
+    skyline: 'rome',
+    grade: 1.4,
+    color: 0xff7aa8,
   },
 ];
+const BIRDS = [1, 40, 250, 600, 900]; // flock size by number of places visited
+const SCALE = [3.6, 2.3, 1.5, 1.2, 1.0]; // few birds are drawn larger so each one matters
+
+/** A distant skyline for each place, drawn once onto a strip that wraps around the room. */
+function drawSkyline(ctx: CanvasRenderingContext2D, kind: Skyline) {
+  // Drawn in a 2048x256 design space onto a 1024x128 canvas (small, power-of-two texture).
+  const W = 2048, H = 256;
+  ctx.setTransform(0.5, 0, 0, 0.5, 0, 0);
+  let seed = kind.length * 7919;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0b0a14';
+  ctx.strokeStyle = '#0b0a14';
+  if (kind === 'farm') {
+    const hill = (x: number) => 175 + 22 * Math.sin((x / W) * Math.PI * 8) + 10 * Math.sin((x / W) * Math.PI * 26);
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W; x += 8) ctx.lineTo(x, hill(x));
+    ctx.lineTo(W, H); ctx.fill();
+    for (let x = 60; x < W; x += 120 + rnd() * 160) {
+      const y = hill(x), r = 16 + rnd() * 14;
+      ctx.fillRect(x - 2, y - r, 4, r);
+      ctx.beginPath(); ctx.arc(x, y - r - 8, r, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + r * 0.7, y - r, r * 0.7, 0, Math.PI * 2); ctx.fill();
+    }
+  } else if (kind === 'marsh') {
+    ctx.fillRect(0, 205, W, H);
+    ctx.lineWidth = 2;
+    for (let x = 0; x < W; x += 5) {
+      const h = 25 + rnd() * 75, lean = (rnd() - 0.5) * 14;
+      ctx.beginPath(); ctx.moveTo(x, 206); ctx.lineTo(x + lean, 206 - h); ctx.stroke();
+      if (rnd() > 0.82) { ctx.beginPath(); ctx.ellipse(x + lean, 200 - h, 2.5, 9, 0, 0, Math.PI * 2); ctx.fill(); }
+    }
+  } else if (kind === 'pier') {
+    ctx.fillRect(0, 212, W, H);
+    for (let rpt = 0; rpt < 2; rpt++) {
+      const x0 = 180 + rpt * 1024;
+      ctx.fillRect(x0, 168, 620, 7);
+      for (let x = x0; x <= x0 + 620; x += 44) ctx.fillRect(x, 170, 4, 44);
+      ctx.fillRect(x0 + 430, 128, 120, 42);
+      ctx.beginPath(); ctx.arc(x0 + 490, 128, 44, Math.PI, 0); ctx.fill();
+      ctx.fillRect(x0 + 487, 66, 6, 22);
+      for (let x = x0 + 30; x < x0 + 420; x += 90) { ctx.fillRect(x, 140, 3, 30); ctx.beginPath(); ctx.arc(x + 1.5, 138, 5, 0, Math.PI * 2); ctx.fill(); }
+    }
+  } else {
+    let x = 0;
+    while (x < W) {
+      const w = 50 + rnd() * 90, h = 35 + rnd() * 70;
+      ctx.fillRect(x, 212 - h, w + 1, h + 50);
+      const pick = rnd();
+      if (pick > 0.78) { // a dome with a lantern
+        const r = w * 0.36;
+        ctx.beginPath(); ctx.arc(x + w / 2, 212 - h, r, Math.PI, 0); ctx.fill();
+        ctx.fillRect(x + w / 2 - 3, 212 - h - r - 12, 6, 14);
+      } else if (pick < 0.2) { // an umbrella pine
+        ctx.fillRect(x + w / 2 - 2, 212 - h - 34, 4, 36);
+        ctx.beginPath(); ctx.ellipse(x + w / 2, 212 - h - 38, 26, 10, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      x += w;
+    }
+  }
+  // Fade the ground out towards the bottom so the strip has no hard lower edge.
+  const g = ctx.createLinearGradient(0, 205, 0, H);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = g; ctx.fillRect(0, 205, W, H - 205);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+interface Orb { level: number; mesh: Mesh; label: Mesh; dwell: number }
 
 const FLOCK_SIZE = 900;
 
@@ -118,6 +227,25 @@ export class MurmurSystem extends createSystem({
   private startDelay = -1;
   private lastLog = -1;
   private lastSnd = -1;
+  private dusk!: Mesh; // a soft tinted dome that takes the room from golden hour to night
+  private duskTarget = { color: new Color(1.0, 0.62, 0.25), opacity: 0 };
+  private night = 0;
+  private targetScale = 1;
+  private hawkFlee = 0;
+  private mode: 'play' | 'map' = 'play';
+  private visited = new Set<number>();
+  private orbs: Orb[] = [];
+  private skyline!: { mesh: Mesh; ctx: CanvasRenderingContext2D; tex: CanvasTexture; target: number };
+  // The world you step into at each place: a real 360 photo that replaces the room ('vr'),
+  // or stay in your own room and let the place come to you ('ar').
+  private worldMode: 'vr' | 'ar' = new URLSearchParams(location.search).get('world') === 'ar' ? 'ar' : 'vr';
+  private worldSphere!: Mesh;
+  private worldTarget = 0;
+  private worldWant = '';
+  private worldHave = '';
+  private worldCache = new Map<string, Texture>();
+  private worldLoader = new TextureLoader();
+  private toggle!: { mesh: Mesh; label: Mesh; ctx: CanvasRenderingContext2D; tex: CanvasTexture; dwell: number; cool: number };
 
   init() {
     this.flock = new Flock(FLOCK_SIZE);
@@ -146,6 +274,80 @@ export class MurmurSystem extends createSystem({
 
     this.hud = this.makeHud();
 
+    this.dusk = new Mesh(
+      new SphereGeometry(7, 24, 16),
+      new MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0, side: BackSide, depthWrite: false }),
+    );
+    this.dusk.renderOrder = -10;
+    this.dusk.frustumCulled = false;
+    this.scene.add(this.dusk);
+    this.flock.active = 1;
+
+    // The skyline strip that wraps around the room at each place.
+    const sc = document.createElement('canvas');
+    sc.width = 1024; sc.height = 128;
+    const stex = new CanvasTexture(sc);
+    const smesh = new Mesh(
+      new CylinderGeometry(6, 6, 1.5, 64, 1, true),
+      new MeshBasicMaterial({ map: stex, transparent: true, opacity: 0, side: BackSide, depthWrite: false }),
+    );
+    smesh.renderOrder = -9;
+    smesh.frustumCulled = false;
+    this.scene.add(smesh);
+    this.skyline = { mesh: smesh, ctx: sc.getContext('2d')!, tex: stex, target: 0 };
+
+    // The world sphere: a 360 photo of the place, drawn behind everything and over the passthrough.
+    this.worldSphere = new Mesh(
+      new SphereGeometry(40, 64, 32),
+      new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, side: BackSide, depthWrite: false, depthTest: false }),
+    );
+    this.worldSphere.scale.x = -1; // viewed from inside, so un-mirror the photo
+    this.worldSphere.renderOrder = -20;
+    this.worldSphere.frustumCulled = false;
+    this.worldSphere.visible = false;
+    this.scene.add(this.worldSphere);
+
+    // The switch on the map between stepping into the world and staying in your room.
+    const tc = document.createElement('canvas');
+    tc.width = 512; tc.height = 96;
+    const ttex = new CanvasTexture(tc);
+    const tmesh = new Mesh(
+      new SphereGeometry(0.02, 16, 12),
+      new MeshBasicMaterial({ color: 0xe8e4ff, transparent: true, opacity: 0.9 }),
+    );
+    const tlabel = new Mesh(
+      new PlaneGeometry(0.15, 0.028),
+      new MeshBasicMaterial({ map: ttex, transparent: true, depthWrite: false }),
+    );
+    tlabel.renderOrder = 9;
+    tmesh.visible = tlabel.visible = false;
+    this.scene.add(tmesh, tlabel);
+    this.toggle = { mesh: tmesh, label: tlabel, ctx: tc.getContext('2d')!, tex: ttex, dwell: 0, cool: 0 };
+    this.drawToggle();
+
+    // The map: one small light per place, floating within arm's reach.
+    for (let li = 1; li < LEVELS.length; li++) {
+      const mesh = new Mesh(
+        new SphereGeometry(0.028, 20, 14),
+        new MeshBasicMaterial({ color: LEVELS[li].color, transparent: true, opacity: 0.95 }),
+      );
+      const lc = document.createElement('canvas');
+      lc.width = 512; lc.height = 96;
+      const lx = lc.getContext('2d')!;
+      lx.fillStyle = 'rgba(12,10,18,0.6)';
+      lx.beginPath(); lx.roundRect(4, 4, 504, 88, 30); lx.fill();
+      lx.fillStyle = '#f2eee8'; lx.font = '600 44px system-ui, sans-serif'; lx.textAlign = 'center';
+      lx.fillText(LEVELS[li].name ?? '', 256, 63);
+      const label = new Mesh(
+        new PlaneGeometry(0.15, 0.028),
+        new MeshBasicMaterial({ map: new CanvasTexture(lc), transparent: true, depthWrite: false }),
+      );
+      label.renderOrder = 9;
+      mesh.visible = label.visible = false;
+      this.scene.add(mesh, label);
+      this.orbs.push({ level: li, mesh, label, dwell: 0 });
+    }
+
     // A soft ring under each palm shows which gesture the game is reading.
     for (let i = 0; i < 2; i++) {
       const cue = new Mesh(
@@ -166,17 +368,17 @@ export class MurmurSystem extends createSystem({
         }
       }),
     );
-    this.setHud('MURMUR', 'Enter mixed reality to begin.');
+    this.setHud('MURMUR', 'One evening, four roosts, nine hundred starlings. Bring them home.');
   }
 
   private makeHud() {
     const canvas = document.createElement('canvas');
     canvas.width = 1024;
-    canvas.height = 256;
+    canvas.height = 320;
     const ctx = canvas.getContext('2d')!;
     const tex = new CanvasTexture(canvas);
     const mesh = new Mesh(
-      new PlaneGeometry(0.44, 0.11),
+      new PlaneGeometry(0.46, 0.144),
       new MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }),
     );
     mesh.renderOrder = 10;
@@ -184,22 +386,22 @@ export class MurmurSystem extends createSystem({
     return { mesh, ctx, tex, last: '' };
   }
 
-  private setHud(title: string, line: string, progress = -1) {
-    const key = title + '|' + line + '|' + progress;
+  private setHud(title: string, line: string, progress = -1, birds = 0) {
+    const key = title + '|' + line + '|' + progress + '|' + birds;
     if (this.hud.last === key) return;
     this.hud.last = key;
     const { ctx, tex } = this.hud;
-    ctx.clearRect(0, 0, 1024, 256);
+    ctx.clearRect(0, 0, 1024, 320);
     ctx.fillStyle = 'rgba(12,10,18,0.62)';
     ctx.beginPath();
-    ctx.roundRect(8, 8, 1008, 240, 40);
+    ctx.roundRect(8, 8, 1008, 304, 40);
     ctx.fill();
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffd27a';
-    ctx.font = '600 58px system-ui, sans-serif';
+    ctx.font = '600 54px system-ui, sans-serif';
     ctx.fillText(title, 512, 78);
     ctx.fillStyle = '#f2eee8';
-    ctx.font = '400 36px system-ui, sans-serif';
+    ctx.font = '400 33px system-ui, sans-serif';
     const words = line.split(' ');
     const lines: string[] = [];
     let cur = '';
@@ -211,29 +413,176 @@ export class MurmurSystem extends createSystem({
       } else cur = next;
     }
     if (cur) lines.push(cur);
-    lines.slice(0, 2).forEach((l, i) => ctx.fillText(l, 512, 135 + i * 44));
+    lines.slice(0, 3).forEach((l, i) => ctx.fillText(l, 512, 132 + i * 42));
+    const barW = birds > 0 ? 600 : 800;
     if (progress >= 0) {
       ctx.fillStyle = 'rgba(255,255,255,0.18)';
-      ctx.fillRect(112, 222, 800, 10);
+      ctx.fillRect(112, 274, barW, 10);
       ctx.fillStyle = '#8fd3ff';
-      ctx.fillRect(112, 222, 800 * Math.min(1, progress), 10);
+      ctx.fillRect(112, 274, barW * Math.min(1, progress), 10);
+    }
+    if (birds > 0) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ffd27a';
+      ctx.font = '600 28px system-ui, sans-serif';
+      ctx.fillText(birds === 1 ? '1 starling' : `${birds} starlings`, 930, 289);
     }
     tex.needsUpdate = true;
   }
 
-  private startLevel(i: number) {
+  private drawToggle() {
+    const { ctx, tex } = this.toggle;
+    ctx.clearRect(0, 0, 512, 96);
+    ctx.fillStyle = 'rgba(12,10,18,0.6)';
+    ctx.beginPath(); ctx.roundRect(4, 4, 504, 88, 30); ctx.fill();
+    ctx.fillStyle = '#cfd6ff'; ctx.font = '500 36px system-ui, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(this.worldMode === 'vr' ? 'Stay in my room instead' : 'Step into the places', 256, 60);
+    tex.needsUpdate = true;
+  }
+
+  /** Fade to the 360 world of a place (or back to the room when name is empty). */
+  private showWorld(name: string) {
+    this.worldWant = name;
+    if (!name) { this.worldTarget = 0; return; }
+    if (!this.worldCache.has(name)) {
+      this.worldLoader.load(`./worlds/${name}.jpg`, (t) => {
+        t.colorSpace = SRGBColorSpace;
+        this.worldCache.set(name, t);
+      });
+    }
+  }
+
+  private updateWorld(head: Vector3, delta: number) {
+    const m = this.worldSphere.material as MeshBasicMaterial;
+    const ready = this.worldWant && this.worldCache.has(this.worldWant);
+    // Fade out before swapping photos, so one place never pops into another.
+    const target = this.worldWant && this.worldWant === this.worldHave ? 1 : 0;
+    m.opacity += (target - m.opacity) * Math.min(1, delta * 1.4);
+    if (this.worldWant !== this.worldHave && m.opacity < 0.02 && (ready || !this.worldWant)) {
+      this.worldHave = this.worldWant;
+      m.map = this.worldHave ? this.worldCache.get(this.worldHave)! : null;
+      m.needsUpdate = true;
+    }
+    this.worldSphere.visible = m.opacity > 0.005;
+    // Sit the horizon a little below eye level so the flock flies against open sky.
+    this.worldSphere.position.set(head.x, head.y - 5, head.z);
+    this.worldTarget = target;
+  }
+
+  private clearGates() {
     for (const g of this.gates) {
       this.scene.remove(g.mesh);
       g.mesh.geometry.dispose();
     }
     this.gates = [];
     this.path = [];
+    this.drawing.length = 0;
+  }
+
+  /** How far the journey has come: 0 = the lost bird, 1..4 = places, 5 = nightfall. */
+  private stage() {
+    if (this.finished) return 5;
+    return this.levelIndex <= 0 ? 0 : Math.min(4, this.visited.size + (this.mode === 'play' ? 1 : 0));
+  }
+
+  /** A chapter is done: earn its field note, then choose where to fly next (or night falls). */
+  private completeLevel() {
+    const level = LEVELS[this.levelIndex];
+    if (this.levelIndex > 0) this.visited.add(this.levelIndex);
+    if (this.visited.size >= LEVELS.length - 1) {
+      this.startLevel(LEVELS.length);
+      return;
+    }
+    this.clearGates();
+    this.mode = 'map';
+    this.levelTimes.push(this.levelTime);
+    this.levelTime = 0;
+    this.hawkMesh.visible = false;
+    this.wind.set(0, 0, 0);
+    this.skyline.target = 0;
+    const pick = 'Touch a light to choose where they fly next.';
+    if (level.note) this.setHud(`Field note ${this.visited.size} of ${LEVELS.length - 1}`, `${level.note} ${pick}`);
+    else this.setHud('It knows the way now', `Its flock is scattered across four roosts. ${pick}`);
+    // Lay the lights out in an arc in front of the player, within easy reach.
+    const head = this.viewCam().getWorldPosition(new Vector3());
+    const fwd = this.viewCam().getWorldDirection(new Vector3()).setY(0).normalize();
+    const right = new Vector3(-fwd.z, 0, fwd.x);
+    this.orbs.forEach((o, k) => {
+      const t = k - (this.orbs.length - 1) / 2;
+      o.mesh.position.copy(head).addScaledVector(fwd, 0.42 - Math.abs(t) * 0.03).addScaledVector(right, t * 0.17);
+      o.mesh.position.y = head.y - 0.28;
+      o.label.position.copy(o.mesh.position).setY(o.mesh.position.y + 0.06);
+      o.label.lookAt(head);
+      const done = this.visited.has(o.level);
+      (o.mesh.material as MeshBasicMaterial).opacity = done ? 0.25 : 0.95;
+      (o.label.material as MeshBasicMaterial).opacity = done ? 0.35 : 1;
+      o.mesh.visible = o.label.visible = true;
+      o.dwell = 0;
+    });
+    this.toggle.mesh.position.copy(head).addScaledVector(fwd, 0.36).addScaledVector(right, -0.02);
+    this.toggle.mesh.position.y = head.y - 0.4;
+    this.toggle.label.position.copy(this.toggle.mesh.position).setY(this.toggle.mesh.position.y - 0.045);
+    this.toggle.label.lookAt(head);
+    this.toggle.mesh.visible = this.toggle.label.visible = true;
+    this.toggle.dwell = 0;
+    this.audio.chime(0.9);
+  }
+
+  /** In map mode: touching (or pinching at) a light sends the flock to that place. */
+  private updateMap(delta: number, time: number) {
+    for (const o of this.orbs) {
+      if (this.visited.has(o.level)) continue;
+      o.mesh.scale.setScalar(1 + Math.sin(time * 3 + o.level) * 0.12 + o.dwell * 1.2);
+      let near = false;
+      for (const h of [this.hands.left, this.hands.right]) {
+        if (!h.tracked) continue;
+        const d = h.pinchPoint.distanceTo(o.mesh.position);
+        if ((h.gesture === 'pinch' && d < 0.12) || d < 0.065) near = true;
+        if (h.gesture === 'pinch' && d < 0.12) o.dwell += delta * 3;
+      }
+      o.dwell = near ? o.dwell + delta : Math.max(0, o.dwell - delta * 2);
+      if (o.dwell > 0.5) {
+        this.startLevel(o.level);
+        return;
+      }
+    }
+    // The world switch: touch or pinch it to flip between stepping inside and staying in the room.
+    const tg = this.toggle;
+    tg.cool = Math.max(0, tg.cool - delta);
+    let nearT = false;
+    for (const h of [this.hands.left, this.hands.right]) {
+      if (!h.tracked) continue;
+      const d = h.pinchPoint.distanceTo(tg.mesh.position);
+      if ((h.gesture === 'pinch' && d < 0.09) || d < 0.05) nearT = true;
+    }
+    tg.dwell = nearT && tg.cool <= 0 ? tg.dwell + delta : Math.max(0, tg.dwell - delta * 2);
+    tg.mesh.scale.setScalar(1 + tg.dwell * 1.5);
+    if (tg.dwell > 0.5) {
+      this.worldMode = this.worldMode === 'vr' ? 'ar' : 'vr';
+      tg.dwell = 0; tg.cool = 1.5;
+      this.drawToggle();
+      this.audio.chime(1.2);
+      if (this.worldMode === 'ar') this.showWorld('');
+    }
+    if (import.meta.env.DEV && Math.floor(time / 2) !== this.lastLog) {
+      this.lastLog = Math.floor(time / 2);
+      console.log(`[map] ${this.visited.size} world=${this.worldMode} toggle=${tg.mesh.position.toArray().map((v) => v.toFixed(3)).join(',')} open=${this.orbs.filter((o) => !this.visited.has(o.level)).map((o) => o.mesh.position.toArray().map((v) => v.toFixed(3)).join(',')).join(';')}`);
+    }
+  }
+
+  private startLevel(i: number) {
+    this.clearGates();
+    this.mode = 'play';
+    for (const o of this.orbs) o.mesh.visible = o.label.visible = false;
+    this.toggle.mesh.visible = this.toggle.label.visible = false;
     this.levelIndex = i;
-    if (i > 0) this.levelTimes.push(this.levelTime);
     this.levelTime = 0;
     if (i >= LEVELS.length) {
       this.finished = true;
-      if (import.meta.env.DEV) console.log(`[lvl] ${i} 100% t=0 birds=${this.flock.active}`);
+      this.skyline.target = 0;
+      // Night falls back home: the last place fades away and the flock settles in your own room.
+      this.showWorld('');
+      if (import.meta.env.DEV) console.log(`[lvl] 5 100% t=0 birds=${this.flock.active}`);
       this.hawkMesh.visible = false;
       this.wind.set(0, 0, 0);
       // Bring the roost down in front of the player for the finale.
@@ -241,13 +590,10 @@ export class MurmurSystem extends createSystem({
       // Straight ahead of where the player sits (the level origin), not wherever they happen to look.
       this.flock.center.set(this.origin.x, h.y - 0.05, this.origin.z - 1.5);
       this.flock.radius = 0.9;
-      const total = this.levelTimes.reduce((a, b) => a + b, 0);
-      const m = Math.floor(total / 60);
-      const sec = Math.round(total % 60).toString().padStart(2, '0');
-      this.setHud(
-        `Murmuration complete  ${m}:${sec}`,
-        'Free Flight: the sky is yours. Lower your hands and the flock comes to rest.',
-      );
+      this.flock.radius = 0.7;
+      this.duskTarget.color.setRGB(0.03, 0.05, 0.16);
+      this.duskTarget.opacity = 0.62;
+      this.setHud('Nightfall', `All ${this.flock.active} are home, and you carry ${this.visited.size} field notes. Lower your hands and let them rest.`);
       this.audio.fanfare();
       return;
     }
@@ -257,11 +603,40 @@ export class MurmurSystem extends createSystem({
     // The flock roosts high and far until you call it, so gates need deliberate play.
     const prev = this.flock.center.clone();
     this.flock.center.set(head.x, head.y + 0.3, head.z - 1.6);
-    if (i === 0) this.flock.gatherAt(this.flock.center, 0.35);
     void prev;
     this.flock.radius = 0.6;
 
     const level = LEVELS[i];
+    const step = i === 0 ? 0 : Math.min(4, this.visited.size + 1);
+    const birds = BIRDS[step], scale = SCALE[step];
+    // The flock grows: newcomers stream in from high beyond the roost, as if through the wall.
+    const before = i === 0 ? 0 : this.flock.active;
+    if (birds > before) {
+      const from = this.flock.center.clone().add(new Vector3(-2.6, 0.9, -2.2));
+      if (i === 0) this.flock.arrive(0, 1, this.flock.center.clone().add(new Vector3(-1.2, 0.2, -0.6)), this.flock.center, 0.1);
+      else this.flock.arrive(before, birds, from, this.flock.center, 0.9);
+      this.flock.active = birds;
+    }
+    this.targetScale = scale;
+    if (i === 0) this.flock.scale = scale;
+    // A lone bird flies straight to your call; a big flock spreads into a cloud around it.
+    this.flock.spread = 0.38 * Math.min(1, birds / 300);
+    // Each place has its own evening light and its own skyline around the room.
+    this.duskTarget.color.setRGB(level.sky[0], level.sky[1], level.sky[2]);
+    this.duskTarget.opacity = level.sky[3];
+    const inside = this.worldMode === 'vr' && !!level.skyline;
+    this.showWorld(inside ? level.skyline! : '');
+    if (inside) {
+      // Inside the photo the light is already there; keep only a light dusk grade.
+      this.duskTarget.opacity = level.sky[3] * (level.grade ?? 0.6);
+      this.skyline.target = 0;
+    } else if (level.skyline) {
+      drawSkyline(this.skyline.ctx, level.skyline);
+      this.skyline.tex.needsUpdate = true;
+      this.skyline.mesh.position.set(head.x, head.y - 0.1, head.z);
+      this.skyline.target = 0.36;
+    } else this.skyline.target = 0;
+    this.hawkFlee = 0;
     this.wind.set(...(level.wind ?? [0, 0, 0]));
     this.hawkMesh.visible = !!level.hawk;
     this.hawk.set(this.origin.x + 2, 1.8, this.origin.z - 2);
@@ -385,7 +760,8 @@ export class MurmurSystem extends createSystem({
       }
       f.strength = 2.4;
       this.forces.push(f);
-    } else if (hand.gesture === 'fist') {
+    } else if (hand.gesture === 'fist' && !LEVELS[this.levelIndex]?.hawk) {
+      // (In the hawk chapter a fist is aimed at the hawk, not at your own flock.)
       const f = this.pool[this.forces.length];
       f.kind = 'repel';
       f.point.copy(hand.palm);
@@ -438,7 +814,18 @@ export class MurmurSystem extends createSystem({
     const head = this.viewCam().getWorldPosition(new Vector3());
     if (this.startDelay > 0) {
       this.startDelay -= delta;
-      if (this.startDelay <= 0) this.startLevel(0);
+      if (this.startDelay <= 0) {
+        // Dev only: ?chapter=N jumps straight to a chapter (5 = nightfall) for testing and capture.
+        const jump = import.meta.env.DEV ? Number(new URLSearchParams(location.search).get('chapter') ?? 0) : 0;
+        if (jump > 0) {
+          this.origin.set(head.x, 0, head.z);
+          this.flock.active = 900;
+          this.flock.gatherAt(new Vector3(head.x, head.y + 0.3, head.z - 1.6), 0.5);
+          this.targetScale = this.flock.scale = 1;
+          for (let li = 1; li < LEVELS.length; li++) this.visited.add(li);
+        }
+        this.startLevel(jump > 0 ? LEVELS.length : 0);
+      }
     }
     this.forces.length = 0;
     const bubble = this.pool[this.pool.length - 1];
@@ -450,8 +837,8 @@ export class MurmurSystem extends createSystem({
     this.handForces(this.hands.left, head);
     this.handForces(this.hands.right, head);
 
-    const drawingL = this.updateDrawing(this.hands.left, delta);
-    const drawingR = !drawingL && this.updateDrawing(this.hands.right, delta);
+    const drawingL = this.mode === 'play' && this.updateDrawing(this.hands.left, delta);
+    const drawingR = this.mode === 'play' && !drawingL && this.updateDrawing(this.hands.right, delta);
     void drawingR;
 
     // Flock follows a released path as a moving lure.
@@ -469,17 +856,25 @@ export class MurmurSystem extends createSystem({
     }
     this.updatePathLine();
 
-    const level = LEVELS[this.levelIndex];
+    const level = this.mode === 'play' ? LEVELS[this.levelIndex] : undefined;
     if (level?.hawk && this.forces.length < this.pool.length) {
-      // The hawk dives at the flock centroid; an open palm nearby drives it off.
-      const target = this.centroid();
-      const toward = target.sub(this.hawk).setLength(1.2);
-      this.hawkVel.lerp(toward, delta * 0.8);
+      // The falcon dives at the flock.
+      // A fist clenched at it drives it off for a few seconds.
       for (const h of [this.hands.left, this.hands.right]) {
-        if (h.tracked && h.gesture === 'open' && h.palm.distanceTo(this.hawk) < 0.45) {
-          this.hawkVel.add(this.hawk.clone().sub(h.palm).setLength(4 * delta * 10));
+        if (!h.tracked || h.gesture !== 'fist') continue;
+        const toHawk = this.hawk.clone().sub(head).normalize();
+        const toFist = h.palm.clone().sub(head).normalize();
+        if (toHawk.dot(toFist) > 0.8 || h.palm.distanceTo(this.hawk) < 0.9) {
+          if (this.hawkFlee <= 0) this.audio.chime(0.6);
+          this.hawkFlee = 6;
         }
       }
+      this.hawkFlee -= delta;
+      const target = this.hawkFlee > 0
+        ? new Vector3(this.origin.x + 2.5, 2.3, this.origin.z - 2.8)
+        : this.centroid();
+      const toward = target.sub(this.hawk).setLength(this.hawkFlee > 0 ? 2.2 : 1.2);
+      this.hawkVel.lerp(toward, delta * (this.hawkFlee > 0 ? 2.5 : 0.8));
       this.hawk.addScaledVector(this.hawkVel, delta);
       this.hawk.y = Math.min(2.4, Math.max(0.5, this.hawk.y));
       this.hawkMesh.position.copy(this.hawk);
@@ -523,6 +918,14 @@ export class MurmurSystem extends createSystem({
     const steering = this.forces.some((f) => f !== this.pool[this.pool.length - 1] && f.radius === 0 && f.kind === 'attract') || this.forces.some((f) => f.kind === 'repel' && f.radius === 0.7);
     this.flock.leash += ((steering ? 0.12 : 1) - this.flock.leash) * Math.min(1, delta * 3);
     this.flock.calm = this.finished ? Math.min(1, this.flock.calm + delta * 0.2) : 0;
+    // Smooth story transitions: bird size, the dusk light, and starlight at nightfall.
+    this.flock.scale += (this.targetScale - this.flock.scale) * Math.min(1, delta * 1.5);
+    const dm = this.dusk.material as MeshBasicMaterial;
+    dm.color.lerp(this.duskTarget.color, Math.min(1, delta * 0.6));
+    dm.opacity += (this.duskTarget.opacity - dm.opacity) * Math.min(1, delta * 0.6);
+    this.dusk.position.copy(head);
+    this.night += ((this.finished ? 1 : 0) - this.night) * Math.min(1, delta * 0.5);
+    this.flock.setNight(this.night);
     this.flock.update(delta, time, this.forces, this.wind);
     this.audio.setIntensity(this.flock.averageSpeed() / 1.7, this.forces.length > 1);
     if (import.meta.env.DEV && Math.floor(time * 4) !== this.lastSnd) {
@@ -532,8 +935,12 @@ export class MurmurSystem extends createSystem({
 
     this.levelTime += delta;
     // Free Flight: the summary card bows out after a few seconds and leaves just you and the flock.
-    if (this.finished) this.hud.mesh.visible = this.levelTime < 8;
-    this.updateGates(time, delta);
+    if (this.finished) this.hud.mesh.visible = this.levelTime < 10;
+    if (this.mode === 'map') this.updateMap(delta, time);
+    else this.updateGates(time, delta);
+    const sm = this.skyline.mesh.material as MeshBasicMaterial;
+    sm.opacity += (this.skyline.target - sm.opacity) * Math.min(1, delta * 0.8);
+    this.updateWorld(head, delta);
     this.placeHud(head, delta);
   }
 
@@ -568,12 +975,16 @@ export class MurmurSystem extends createSystem({
   private centroid() {
     const c = new Vector3();
     const p = this.flock.pos;
-    for (let i = 0; i < this.flock.count; i += 6) {
+    const n = this.flock.active;
+    const step = n > 60 ? 6 : 1;
+    let k = 0;
+    for (let i = 0; i < n; i += step) {
       c.x += p[i * 3];
       c.y += p[i * 3 + 1];
       c.z += p[i * 3 + 2];
+      k++;
     }
-    return c.multiplyScalar(6 / this.flock.count);
+    return c.multiplyScalar(1 / Math.max(1, k));
   }
 
   private updateGates(time: number, delta: number) {
@@ -613,7 +1024,10 @@ export class MurmurSystem extends createSystem({
         // Flow = how many birds are in the ring right now (smoothed). A thick stream you are leading
         // fills the gate at one second per second; a trickle fills it slowly; a drifting flock not at all.
         g.flow += (entered - g.flow) * Math.min(1, delta * 4);
-        if (leading) g.passedCount += delta * Math.min(1, g.flow / 80);        if (g.passedCount >= need) {
+        // "Thick" is relative to how many birds you have: one bird in the ring is enough in chapter I.
+        const thick = Math.min(80, Math.max(0.6, this.flock.active * 0.2));
+        if (leading) g.passedCount += delta * Math.min(1, g.flow / thick);
+        if (g.passedCount >= need) {
           g.done = true;
           (g.mesh.material as MeshBasicMaterial).color.set(0xffd27a);
           (g.mesh.material as MeshBasicMaterial).opacity = 0.45; // completed gates step back visually
@@ -630,19 +1044,21 @@ export class MurmurSystem extends createSystem({
       const pct = Math.round((progress / this.gates.length) * 100);
       if (import.meta.env.DEV && Math.floor(time / 2) !== this.lastLog) {
         this.lastLog = Math.floor(time / 2);
-        console.log(`[lvl] ${this.levelIndex} ${pct}% t=${this.levelTime.toFixed(1)} birds=${this.flock.active} open=${this.gates.filter((g) => !g.done).map((g) => g.pos.toArray().map((v) => v.toFixed(2)).join(",")).join(";")}`);
+        console.log(`[lvl] ${this.stage()} ${pct}% t=${this.levelTime.toFixed(1)} birds=${this.flock.active} open=${this.gates.filter((g) => !g.done).map((g) => g.pos.toArray().map((v) => v.toFixed(2)).join(",")).join(";")}`);
       }
-      this.setHud(level.title, level.hint, pct / 100);
+      this.setHud(level.title, level.hint, pct / 100, this.flock.active);
     }
-    if (allDone && this.gates.length) this.startLevel(this.levelIndex + 1);
+    if (allDone && this.gates.length) this.completeLevel();
   }
 
   private hudTarget = new Vector3();
   private placeHud(head: Vector3, delta: number) {
     // Float low in the field of view and lag behind head motion.
     const dir = this.viewCam().getWorldDirection(new Vector3()).setY(0).normalize();
-    this.hudTarget.copy(head).addScaledVector(dir, 0.75);
-    this.hudTarget.y = head.y - 0.4;
+    // On the map the card sits further back and higher, clear of the lights in front of you.
+    const far = this.mode === 'map';
+    this.hudTarget.copy(head).addScaledVector(dir, far ? 1.0 : 0.75);
+    this.hudTarget.y = head.y - (far ? 0.1 : 0.4);
     this.hud.mesh.position.lerp(this.hudTarget, Math.min(1, delta * 2.5));
     this.hud.mesh.lookAt(head);
   }

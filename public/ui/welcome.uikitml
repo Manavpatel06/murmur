@@ -60,16 +60,16 @@
 </style>
 <Panel class="panel-root">
   <div class="panel-content">
-    <div class="eyebrow">A MIXED REALITY MURMURATION</div>
+    <div class="eyebrow">AN EVENING WITH THE STARLINGS</div>
     <div class="heading">MURMUR</div>
-    <div class="body">Sit back. A thousand starlings are about to fill your room.</div>
-    <div class="body">Open palm to call. Fist to scatter. Pinch to draw their path.</div>
+    <div class="body">A lost starling is at your window. Travel to four real roosts and bring its flock home.</div>
+    <div class="body">Open palm to call. Pinch to draw their path. Fist to face the falcon.</div>
   </div>
   <Button id="xr-button" class="button">
     <ButtonIcon>
       <RectangleGoggles></RectangleGoggles>
     </ButtonIcon>
-    <ButtonLabel class="button-label">Release the flock</ButtonLabel>
+    <ButtonLabel class="button-label">Begin at dusk</ButtonLabel>
   </Button>
   <Button id="exit-button" class="button" style="display: none">
     <ButtonIcon>

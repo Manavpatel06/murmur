@@ -49,7 +49,10 @@ export class Flock {
   leash = 1; // 1 = flock stays near its roost; lower while the player steers
   spread = 0.38; // radius of each bird's personal offset around a call point
   readonly phase: Float32Array;
-  active: number; // birds currently simulated and drawn (lowered on slow devices)
+  active: number; // birds currently simulated and drawn (grows through the story)
+  scale = 1; // drawn size multiplier: a lone bird is drawn large, a full flock at true scale
+  private dayColor = new Color(0.1, 0.085, 0.12);
+  private nightColor = new Color(1.0, 0.8, 0.45);
 
   private cell = 0.22;
   private grid = new Map<number, number[]>();
@@ -84,7 +87,7 @@ export class Flock {
     for (let i = 0; i < count; i++) phase[i] = Math.random() * 6.283;
     geo.setAttribute('aPhase', new InstancedBufferAttribute(phase, 1));
 
-    const mat = new MeshBasicMaterial({ color: new Color(0x16131a), side: 2 });
+    const mat = new MeshBasicMaterial({ color: this.dayColor.clone(), side: 2 });
     const uTime = this.uTime;
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = uTime;
@@ -106,9 +109,13 @@ export class Flock {
     this.mesh.frustumCulled = false;
     const tint = new Color();
     for (let i = 0; i < count; i++) {
-      tint.setHSL(0.72 + Math.random() * 0.06, 0.15, 0.06 + Math.random() * 0.08);
+      // The material carries the flock's colour (dark by day, starlight at night);
+      // each bird only varies it a little.
+      tint.setScalar(0.65 + Math.random() * 0.7);
       this.mesh.setColorAt(i, tint);
     }
+    // Bird 0 is the lost one you meet first: it stays gold for the whole story.
+    this.mesh.setColorAt(0, tint.setRGB(9.0, 4.6, 1.0));
   }
 
   private key(x: number, y: number, z: number) {
@@ -228,6 +235,7 @@ export class Flock {
       pos[ix] = px + vx * dt; pos[ix + 1] = py + vy * dt; pos[ix + 2] = pz + vz * dt;
     }
 
+    this.s.setScalar(this.scale);
     for (let i = 0; i < count; i++) {
       const ix = i * 3;
       this.p.set(pos[ix], pos[ix + 1], pos[ix + 2]);
@@ -252,11 +260,28 @@ export class Flock {
     }
   }
 
+  /** Newcomers [from, to) appear in a loose stream around `c`, already flying toward `toward`. */
+  arrive(from: number, to: number, c: Vector3, toward: Vector3, r: number) {
+    const dir = toward.clone().sub(c).normalize();
+    for (let i = from; i < Math.min(to, this.count); i++) {
+      const along = Math.random() * r * 3;
+      this.pos[i * 3] = c.x - dir.x * along + (Math.random() - 0.5) * r;
+      this.pos[i * 3 + 1] = c.y - dir.y * along + (Math.random() - 0.5) * r * 0.6;
+      this.pos[i * 3 + 2] = c.z - dir.z * along + (Math.random() - 0.5) * r;
+      this.vel[i * 3] = dir.x; this.vel[i * 3 + 1] = dir.y; this.vel[i * 3 + 2] = dir.z;
+    }
+  }
+
+  /** 0 = dusk (dark silhouettes), 1 = night (the birds glow like stars). */
+  setNight(k: number) {
+    (this.mesh.material as MeshBasicMaterial).color.copy(this.dayColor).lerp(this.nightColor, k);
+  }
+
   averageSpeed(): number {
     let s = 0;
     const step = 8;
     let n = 0;
-    for (let i = 0; i < this.count; i += step) {
+    for (let i = 0; i < this.active; i += step) {
       const ix = i * 3;
       s += Math.hypot(this.vel[ix], this.vel[ix + 1], this.vel[ix + 2]);
       n++;
